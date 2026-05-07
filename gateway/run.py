@@ -18378,6 +18378,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             message_text = f"[{_safe_user_name}] {message_text}"
 
+        # LOCAL PATCH (joykiller): prepend per-message timestamp so the agent
+        # has time-awareness across long conversations. Upstream injects time
+        # only once at session start. Toggle via env HERMES_PREPEND_MSG_TS=1.
+        if os.environ.get("HERMES_PREPEND_MSG_TS") == "1":
+            try:
+                _ts = getattr(event, "timestamp", None)
+                if _ts is not None:
+                    _local = _ts.astimezone() if _ts.tzinfo else _ts
+                    _ts_str = _local.strftime("%Y-%m-%d %H:%M %Z").strip()
+                    message_text = f"[{_ts_str}] {message_text}"
+            except Exception:
+                pass
+
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
         # trigger message, not the backfill block.
