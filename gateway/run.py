@@ -6704,6 +6704,21 @@ class GatewayRunner:
         if _is_shared_multi_user and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
 
+        # LOCAL PATCH (joykiller): prepend per-message timestamp so the agent
+        # has time-awareness across long conversations. Upstream injects time
+        # only once at session start. Toggle via env HERMES_PREPEND_MSG_TS=1.
+        # Future PR: replace env flag with config.prepend_message_timestamps.
+        if os.environ.get("HERMES_PREPEND_MSG_TS") == "1":
+            try:
+                _ts = getattr(event, "timestamp", None)
+                if _ts is not None:
+                    # Convert to local time for human readability
+                    _local = _ts.astimezone() if _ts.tzinfo else _ts
+                    _ts_str = _local.strftime("%Y-%m-%d %H:%M %Z").strip()
+                    message_text = f"[{_ts_str}] {message_text}"
+            except Exception:
+                pass  # Never break message flow over a timestamp
+
         if event.media_urls:
             image_paths = []
             audio_paths = []
