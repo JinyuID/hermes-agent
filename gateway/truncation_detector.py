@@ -95,10 +95,24 @@ def _ends_naturally(text: str) -> bool:
     last = stripped[-1]
     if last in _NATURAL_END_CHARS:
         return True
-    # Treat `**` (bold close) as a natural ending — common closer for the
-    # last word in a sentence, e.g. "...wrapped in **bold**".
+    # Treat `**` (bold close) as a natural ending ONLY if a real terminator
+    # appears IMMEDIATELY before the bold close — i.e. "...wrapped in
+    # **bold word**." has the terminator on the right side; "**bold**." is
+    # a standalone bold heading at end of line, dangling.
+    # Real natural endings look like "...句号。**强调**" — the `**...**`
+    # is preceded by terminator+content. Dangling endings look like
+    # "- **工具路由**" or "\n\n**Highlights**" — preceded by markdown
+    # list/heading marker, not a sentence terminator.
     if last == "*" and len(stripped) >= 2 and stripped[-2] == "*":
-        return True
+        # Find opening `**` by scanning backwards
+        body = stripped[:-2]  # strip closing **
+        idx = body.rfind("**")
+        if idx >= 0:
+            # Check the char immediately before opening `**`
+            preceding = body[:idx].rstrip()
+            if preceding and preceding[-1] in _NATURAL_END_CHARS:
+                return True
+        return False
     if _EMOJI_RE.search(last):
         return True
     return False
@@ -123,11 +137,15 @@ def is_likely_truncated(
         return False
 
     tail = content[-200:]  # cheap windowed scan
+    # Order matters: a natural terminator at the end overrides any dangling
+    # pattern earlier in the tail. Otherwise replies that legitimately end
+    # with "…**something**？" or "...something。 😌" trigger false positives
+    # because the bold/em-dash earlier in the tail matches a dangling pattern.
+    if _ends_naturally(content):
+        return False
     if _DANGLING_TAIL_RE.search(tail):
         return True
-    if not _ends_naturally(content):
-        return True
-    return False
+    return True
 
 
 CONTINUATION_PROMPT = (
