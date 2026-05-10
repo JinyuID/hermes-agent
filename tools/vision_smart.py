@@ -28,12 +28,15 @@ to Gemini (graceful degradation).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
-from typing import Any, Awaitable, Dict, Tuple
+from typing import Any, Awaitable, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 from tools.registry import registry, tool_error
@@ -49,6 +52,10 @@ DEFAULT_OCR_ENDPOINT = "http://127.0.0.1:8765/ocr"
 DEFAULT_OCR_TIMEOUT = 5.0
 DEFAULT_MIN_CONFIDENCE = 0.5
 DEFAULT_SHORT_TEXT_THRESHOLD = 40
+DEFAULT_AUTO_RESIZE = True
+DEFAULT_RESIZE_MAX_BYTES = 5 * 1024 * 1024
+DEFAULT_RESIZE_MAX_PIXELS = 2048
+RESIZE_CACHE_DIR = "/tmp/hermes_vision_resized"
 
 # Path patterns that strongly suggest "this is a screenshot" rather than a
 # user-supplied photo.  Case-insensitive.
@@ -80,7 +87,115 @@ def _load_vision_cfg() -> Dict[str, Any]:
         "short_text_threshold": int(
             cfg.get("short_text_threshold", DEFAULT_SHORT_TEXT_THRESHOLD)
         ),
+        "auto_resize": bool(cfg.get("auto_resize", DEFAULT_AUTO_RESIZE)),
+        "max_bytes": int(cfg.get("max_bytes", DEFAULT_RESIZE_MAX_BYTES)),
+        "max_pixels": int(cfg.get("max_pixels", DEFAULT_RESIZE_MAX_PIXELS)),
     }
+
+
+# --------------------------------------------------------------------------- #
+# Auto-resize preprocessing
+# --------------------------------------------------------------------------- #
+
+
+def _get_image_dimensions(path: str) -> Optional[Tuple[int, int]]:
+    """Return (width, height) using Pillow if available, else ffprobe.
+
+    Returns None on failure.
+    """
+    try:
+        from PIL import Image  # type: ignore
+
+        with Image.open(path) as im:
+            return im.size  # (w, h)
+    except Exception:
+        pass
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "csv=p=0:s=x", path,
+            ],
+            stderr=subprocess.STDOUT,
+            timeout=10,
+        ).decode().strip()
+        w, h = out.split("x")
+        return int(w), int(h)
+    except Exception as exc:
+        logger.debug("vision_smart: ffprobe failed for %s: %s", path, exc)
+        return None
+
+
+def _maybe_resize(
+    image_path: str,
+    max_bytes: int = DEFAULT_RESIZE_MAX_BYTES,
+    max_pixels: int = DEFAULT_RESIZE_MAX_PIXELS,
+) -> str:
+    """If image exceeds size/pixel limits, ffmpeg-compress to a cached jpg.
+
+    Returns the path to use (resized cache path or original on no-op /
+    failure). Never raises.
+    """
+    try:
+        if not image_path or not os.path.isfile(image_path):
+            return image_path
+        size = os.path.getsize(image_path)
+        dims = _get_image_dimensions(image_path)
+        max_dim = max(dims) if dims else 0
+        if size <= max_bytes and (max_dim == 0 or max_dim <= max_pixels):
+            return image_path
+
+        if not shutil.which("ffmpeg"):
+            logger.warning(
+                "vision_smart: ffmpeg not found; skipping auto-resize for %s",
+                image_path,
+            )
+            return image_path
+
+        os.makedirs(RESIZE_CACHE_DIR, exist_ok=True)
+        # Cache key includes path + mtime + size so updates bust the cache.
+        try:
+            mtime = os.path.getmtime(image_path)
+        except OSError:
+            mtime = 0
+        key = hashlib.sha1(
+            f"{image_path}|{mtime}|{size}|{max_pixels}".encode("utf-8")
+        ).hexdigest()
+        out_path = os.path.join(RESIZE_CACHE_DIR, f"{key}.jpg")
+        if os.path.isfile(out_path) and os.path.getsize(out_path) > 0:
+            logger.debug("vision_smart: using cached resize %s", out_path)
+            return out_path
+
+        # Scale longer side to max_pixels, preserve aspect, q:v 5 (~mid-quality).
+        vf = f"scale='if(gt(iw,ih),{max_pixels},-2)':'if(gt(iw,ih),-2,{max_pixels})'"
+        cmd = [
+            "ffmpeg", "-y", "-loglevel", "error",
+            "-i", image_path,
+            "-vf", vf,
+            "-q:v", "5",
+            out_path,
+        ]
+        try:
+            subprocess.run(cmd, check=True, timeout=30,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+            logger.warning(
+                "vision_smart: ffmpeg resize failed for %s: %s; using original",
+                image_path, exc,
+            )
+            return image_path
+
+        if not os.path.isfile(out_path) or os.path.getsize(out_path) == 0:
+            return image_path
+        logger.info(
+            "vision_smart: resized %s (%d bytes, %s) -> %s (%d bytes)",
+            image_path, size, dims, out_path, os.path.getsize(out_path),
+        )
+        return out_path
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("vision_smart: _maybe_resize crashed: %s", exc)
+        return image_path
 
 
 # --------------------------------------------------------------------------- #
@@ -194,6 +309,24 @@ async def vision_smart_handler_impl(
     route = decide_route(image_url)
     endpoint = cfg["ocr_endpoint"]
 
+    # Auto-resize local oversized images before any downstream call.
+    # URLs are passed through untouched (existing vision_analyze handles them).
+    effective_url = image_url
+    resized_from: Optional[str] = None
+    if cfg.get("auto_resize", DEFAULT_AUTO_RESIZE) and image_url and not _is_url(image_url):
+        try:
+            abs_in = str(Path(image_url).expanduser().resolve(strict=False))
+        except Exception:
+            abs_in = image_url
+        new_path = _maybe_resize(
+            abs_in,
+            max_bytes=cfg.get("max_bytes", DEFAULT_RESIZE_MAX_BYTES),
+            max_pixels=cfg.get("max_pixels", DEFAULT_RESIZE_MAX_PIXELS),
+        )
+        if new_path != abs_in:
+            effective_url = new_path
+            resized_from = image_url
+
     # If routing says OCR but OCR isn't configured, skip straight to Gemini.
     if route == "ocr" and not endpoint:
         logger.debug("vision_smart: OCR endpoint not configured; using Gemini")
@@ -202,20 +335,24 @@ async def vision_smart_handler_impl(
     if route == "ocr":
         # Resolve to absolute path — OCR service expects an absolute local path.
         try:
-            abs_path = str(Path(image_url).expanduser().resolve(strict=False))
+            abs_path = str(Path(effective_url).expanduser().resolve(strict=False))
         except Exception:
-            abs_path = image_url
+            abs_path = effective_url
 
         try:
             ocr = _call_ocr(abs_path, endpoint, cfg["ocr_timeout"])
         except Exception as exc:
             logger.info("vision_smart: OCR failed (%s); falling back to Gemini", exc)
-            gemini_text = await _gemini_fallback(image_url, question)
+            gemini_text = await _gemini_fallback(effective_url, question)
             return {
                 "text": gemini_text,
                 "source": "gemini",
                 "confidence": None,
-                "details": {"ocr_error": str(exc), "route": "ocr->gemini_fallback"},
+                "details": {
+                    "ocr_error": str(exc),
+                    "route": "ocr->gemini_fallback",
+                    **({"resized_from": resized_from, "resized_to": effective_url} if resized_from else {}),
+                },
             }
 
         ok, reason = _ocr_result_is_acceptable(
@@ -229,12 +366,13 @@ async def vision_smart_handler_impl(
                 "details": {
                     "line_count": ocr.get("line_count"),
                     "endpoint": endpoint,
+                    **({"resized_from": resized_from, "resized_to": effective_url} if resized_from else {}),
                 },
             }
 
         # Low-confidence / empty → fallback to Gemini, return both for visibility.
         logger.info("vision_smart: OCR rejected (%s); fallback Gemini", reason)
-        gemini_text = await _gemini_fallback(image_url, question)
+        gemini_text = await _gemini_fallback(effective_url, question)
         return {
             "text": gemini_text,
             "source": "both",
@@ -243,16 +381,20 @@ async def vision_smart_handler_impl(
                 "ocr_text": ocr.get("text", ""),
                 "ocr_rejected_reason": reason,
                 "route": "ocr->gemini_fallback",
+                **({"resized_from": resized_from, "resized_to": effective_url} if resized_from else {}),
             },
         }
 
     # Direct Gemini route.
-    gemini_text = await _gemini_fallback(image_url, question)
+    gemini_text = await _gemini_fallback(effective_url, question)
     return {
         "text": gemini_text,
         "source": "gemini",
         "confidence": None,
-        "details": {"route": "gemini_direct"},
+        "details": {
+            "route": "gemini_direct",
+            **({"resized_from": resized_from, "resized_to": effective_url} if resized_from else {}),
+        },
     }
 
 
