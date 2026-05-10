@@ -53,8 +53,8 @@ DEFAULT_OCR_TIMEOUT = 5.0
 DEFAULT_MIN_CONFIDENCE = 0.5
 DEFAULT_SHORT_TEXT_THRESHOLD = 40
 DEFAULT_AUTO_RESIZE = True
-DEFAULT_RESIZE_MAX_BYTES = 5 * 1024 * 1024
-DEFAULT_RESIZE_MAX_PIXELS = 2048
+DEFAULT_RESIZE_MAX_BYTES = 12 * 1024 * 1024
+DEFAULT_RESIZE_MAX_PIXELS = 3584
 RESIZE_CACHE_DIR = "/tmp/hermes_vision_resized"
 
 # Path patterns that strongly suggest "this is a screenshot" rather than a
@@ -167,13 +167,13 @@ def _maybe_resize(
             logger.debug("vision_smart: using cached resize %s", out_path)
             return out_path
 
-        # Scale longer side to max_pixels, preserve aspect, q:v 5 (~mid-quality).
+        # Scale longer side to max_pixels, preserve aspect, q:v 3 (~high-quality, preserve detail).
         vf = f"scale='if(gt(iw,ih),{max_pixels},-2)':'if(gt(iw,ih),-2,{max_pixels})'"
         cmd = [
             "ffmpeg", "-y", "-loglevel", "error",
             "-i", image_path,
             "-vf", vf,
-            "-q:v", "5",
+            "-q:v", "3",
             out_path,
         ]
         try:
