@@ -2853,6 +2853,35 @@ def _is_channel_dm_topic(
     return is_channel
 
 
+def _try_merge_into_chat_session(
+    job: dict,
+    content: str,
+    platform_name: str,
+    chat_id: str,
+    thread_id: Optional[str],
+) -> None:
+    """Best-effort: merge cron output into the originating chat session's
+    transcript.  See gateway/cron_session_merge.py for the full rationale.
+
+    Always returns None; never raises.  Gated by config flag
+    ``gateway.cron_session_merge.enabled`` (default False).
+    """
+    try:
+        from gateway.cron_session_merge import merge_cron_into_chat_session
+        origin = _resolve_origin(job) or {}
+        merge_cron_into_chat_session(
+            platform=platform_name,
+            chat_id=str(chat_id),
+            message_text=content,
+            cron_job_name=job.get("name", job.get("id", "?")),
+            cron_job_id=job.get("id", ""),
+            thread_id=thread_id or origin.get("thread_id"),
+            user_id=origin.get("user_id"),
+        )
+    except Exception as exc:
+        logger.debug("cron-merge hook failed for job %s: %s", job.get("id", "?"), exc)
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -3530,6 +3559,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         thread_id=thread_id, user_id=origin_user_id,
                         enabled=mirror_this_target and not thread_seeded and not inchannel_seeded,
                     )
+                    if not thread_seeded:
+                        _try_merge_into_chat_session(job, content, platform_name, chat_id, thread_id)
             except Exception as e:
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
                 if not any(err_msg in err for err in target_errors):
@@ -3650,6 +3681,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 thread_id=thread_id, user_id=origin_user_id,
                 enabled=mirror_this_target and not thread_seeded,
             )
+            if not thread_seeded:
+                _try_merge_into_chat_session(job, content, platform_name, chat_id, thread_id)
 
     if policy_drop_errors:
         # Filter-time drops apply to every target; report them once.
