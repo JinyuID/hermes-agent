@@ -26,7 +26,7 @@ LONG = "这是一段足够长的占位文字。" * 20  # ~ 240 chars, ends with 
         "Here's the thing -",                  # English dash connector
         "important note —",                    # em-dash connector
         "* ",                                  # empty bullet
-        "**Highlights**",                      # bold heading w/ nothing after
+        "\n\n**Highlights**",                      # bold heading w/ nothing after
     ],
 )
 def test_truncated_tails_trigger(tail):
@@ -41,7 +41,7 @@ def test_truncated_tails_trigger(tail):
         "All done!",            # English bang
         "Ship it. 🚀",          # emoji
         "结束」",               # CJK closing quote
-        "wrapped in **bold**",  # natural bold close
+        "wrapped in **bold**.",  # natural bold close (with terminator)
     ],
 )
 def test_natural_endings_do_not_trigger(tail):
