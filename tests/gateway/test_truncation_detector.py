@@ -26,7 +26,7 @@ LONG = "这是一段足够长的占位文字。" * 20  # ~ 240 chars, ends with 
         "Here's the thing -",                  # English dash connector
         "important note —",                    # em-dash connector
         "* ",                                  # empty bullet
-        "\n\n**Highlights**",                      # bold heading w/ nothing after
+        "\n\n## Section\n\n**Highlights**",      # heading after section marker, dangling
     ],
 )
 def test_truncated_tails_trigger(tail):
