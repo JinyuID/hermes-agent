@@ -43,7 +43,7 @@ _HERMES_CORE_TOOLS = [
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
-    "vision_analyze", "image_generate",
+    "vision", "vision_analyze", "image_generate",
     # BFL FLUX 3 video generation
     "bfl_flux3_text_to_video", "bfl_flux3_image_to_video",
     "bfl_flux3_keyframes_to_video", "bfl_flux3_video_continuation",
@@ -133,7 +133,7 @@ TOOLSETS = {
     
     "vision": {
         "description": "Image analysis and vision tools",
-        "tools": ["vision_analyze"],
+        "tools": ["vision", "vision_analyze"],
         "includes": []
     },
 
@@ -468,7 +468,7 @@ TOOLSETS = {
             # File manipulation
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation
-            "vision_analyze", "image_generate",
+            "vision", "vision_analyze", "image_generate",
             # BFL FLUX 3 video generation
             "bfl_flux3_text_to_video", "bfl_flux3_image_to_video",
             "bfl_flux3_keyframes_to_video", "bfl_flux3_video_continuation",
