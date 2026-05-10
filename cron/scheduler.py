@@ -721,6 +721,35 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _try_merge_into_chat_session(
+    job: dict,
+    content: str,
+    platform_name: str,
+    chat_id: str,
+    thread_id: Optional[str],
+) -> None:
+    """Best-effort: merge cron output into the originating chat session's
+    transcript.  See gateway/cron_session_merge.py for the full rationale.
+
+    Always returns None; never raises.  Gated by config flag
+    ``gateway.cron_session_merge.enabled`` (default False).
+    """
+    try:
+        from gateway.cron_session_merge import merge_cron_into_chat_session
+        origin = _resolve_origin(job) or {}
+        merge_cron_into_chat_session(
+            platform=platform_name,
+            chat_id=str(chat_id),
+            message_text=content,
+            cron_job_name=job.get("name", job.get("id", "?")),
+            cron_job_id=job.get("id", ""),
+            thread_id=thread_id or origin.get("thread_id"),
+            user_id=origin.get("user_id"),
+        )
+    except Exception as exc:
+        logger.debug("cron-merge hook failed for job %s: %s", job.get("id", "?"), exc)
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -877,6 +906,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
+                    _try_merge_into_chat_session(job, content, platform_name, chat_id, thread_id)
             except Exception as e:
                 logger.warning(
                     "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
@@ -910,6 +940,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            _try_merge_into_chat_session(job, content, platform_name, chat_id, thread_id)
 
     if delivery_errors:
         return "; ".join(delivery_errors)
