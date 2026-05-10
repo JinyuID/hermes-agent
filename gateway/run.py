@@ -14722,6 +14722,64 @@ class GatewayRunner:
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
 
+            # ── Truncation detection + auto-continuation ───────────────────
+            # Some upstream SSE proxies (notably Microsoft Copilot's Anthropic
+            # bridge) occasionally return finish_reason='stop' on a response
+            # that visibly ends mid-sentence. When the user opts in via
+            # gateway.truncation_detection.enabled in config.yaml we run a
+            # heuristic check and, if triggered, ask the agent to continue
+            # from where it left off and stitch the result onto final_response.
+            try:
+                from gateway.truncation_detector import (
+                    TruncationConfig as _TruncCfg,
+                    maybe_continue as _maybe_continue,
+                )
+                _trunc_cfg = _TruncCfg.from_yaml()
+                if _trunc_cfg.enabled and final_response:
+                    _msgs = result.get("messages") or []
+                    _last_finish = "stop"
+                    for _m in reversed(_msgs):
+                        if _m.get("role") == "assistant":
+                            _last_finish = _m.get("finish_reason") or "stop"
+                            break
+
+                    def _continue_fn(_prompt):
+                        _agent = agent_holder[0]
+                        if _agent is None:
+                            return ""
+                        # Build a history that includes the (possibly partial)
+                        # assistant turn we just got, so the agent sees what
+                        # it's continuing from.
+                        _hist = list(agent_history) + [
+                            {"role": "user", "content": _run_message},
+                            {"role": "assistant", "content": final_response},
+                        ]
+                        _r = _agent.run_conversation(
+                            _prompt,
+                            conversation_history=_hist,
+                            task_id=session_id,
+                        )
+                        return (_r or {}).get("final_response", "") or ""
+
+                    _stitched = _maybe_continue(
+                        final_response,
+                        _last_finish,
+                        config=_trunc_cfg,
+                        continue_fn=_continue_fn,
+                    )
+                    if _stitched != final_response:
+                        final_response = _stitched
+                        # Keep the result dict's view of the final text in
+                        # sync so downstream code (DB writes, MEDIA scan,
+                        # title generation) sees the stitched version.
+                        if isinstance(result, dict):
+                            result["final_response"] = _stitched
+            except Exception as _trunc_exc:
+                logger.warning(
+                    "truncation_detector hook failed (continuing with original response): %s",
+                    _trunc_exc,
+                )
+
             # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0
             _input_toks = 0
