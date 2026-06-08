@@ -18384,10 +18384,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if os.environ.get("HERMES_PREPEND_MSG_TS") == "1":
             try:
                 _ts = getattr(event, "timestamp", None)
-                if _ts is not None:
-                    _local = _ts.astimezone() if _ts.tzinfo else _ts
-                    _ts_str = _local.strftime("%Y-%m-%d %H:%M %Z").strip()
-                    message_text = f"[{_ts_str}] {message_text}"
+                if _ts is None:
+                    from datetime import datetime as _dt, timezone as _tz
+                    _ts = _dt.now(_tz.utc)
+                # Convert to the user's chosen timezone, NOT the machine's
+                # system tz. This box runs in Etc/UTC, so a bare
+                # .astimezone() is a no-op and the agent only ever saw UTC,
+                # which made it misjudge time-of-day. HERMES_USER_TZ lets
+                # joykiller change tz from one place when he travels
+                # (e.g. export HERMES_USER_TZ=America/New_York). Defaults to
+                # Pacific. DST is handled automatically by zoneinfo.
+                _user_tz_name = os.environ.get(
+                    "HERMES_USER_TZ", "America/Los_Angeles"
+                )
+                try:
+                    from zoneinfo import ZoneInfo
+                    _user_tz = ZoneInfo(_user_tz_name)
+                except Exception:
+                    _user_tz = None
+                if _ts.tzinfo is None:
+                    from datetime import timezone as _tz
+                    _ts = _ts.replace(tzinfo=_tz.utc)
+                _local = _ts.astimezone(_user_tz) if _user_tz else _ts.astimezone()
+                _ts_str = _local.strftime("%Y-%m-%d %H:%M %Z").strip()
+                message_text = f"[{_ts_str}] {message_text}"
             except Exception:
                 pass
 
