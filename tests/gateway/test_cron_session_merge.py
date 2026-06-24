@@ -24,10 +24,6 @@ def tmp_hermes_home(monkeypatch):
         (home / "sessions").mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
 
-        # Force any cached get_hermes_home() consumers to use the new dir.
-        import hermes_constants
-        monkeypatch.setattr(hermes_constants, "_HERMES_HOME_OVERRIDE", None, raising=False)
-
         # gateway.mirror caches the path at import time — patch it.
         import gateway.mirror as mirror_mod
         monkeypatch.setattr(mirror_mod, "_SESSIONS_DIR", home / "sessions")
