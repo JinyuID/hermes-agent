@@ -615,11 +615,11 @@ def _compute_tool_definitions(
         logger.warning("Schema sanitization skipped: %s", e)
 
     # ── Tool Search (progressive disclosure) ────────────────────────────
-    # Conditionally replace MCP + plugin (non-core) tools with three bridge
-    # tools (tool_search / tool_describe / tool_call) when the deferrable
-    # surface exceeds the configured threshold (default 10% of context
-    # window). Core Hermes tools (toolsets._HERMES_CORE_TOOLS) are NEVER
-    # deferred. See tools/tool_search.py for full design notes.
+    # Replace deferrable tools with three bridge tools
+    # (tool_search / tool_describe / tool_call). The configured threshold
+    # limits the embedded catalog listing, not whether deferral activates.
+    # Core Hermes tools stay eager except for the explicit opt-in on-demand
+    # set in tools.tool_search. See that module for design notes.
     #
     # This is deliberately the last step before returning — sanitization
     # has already normalized schemas, and the assembly is idempotent in
