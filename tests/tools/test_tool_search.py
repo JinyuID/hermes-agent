@@ -153,6 +153,14 @@ class TestClassification:
         from tools.tool_search import is_deferrable_tool_name
         assert not is_deferrable_tool_name("xx_definitely_not_a_tool_xx")
 
+    def test_opt_in_core_tools_are_deferred(self):
+        """Rare creative/audio tools stay callable without occupying every turn."""
+        from tools.tool_search import is_deferrable_tool_name
+
+        assert is_deferrable_tool_name("image_generate")
+        assert is_deferrable_tool_name("text_to_speech")
+        assert not is_deferrable_tool_name("terminal")
+
     def test_classify_keeps_unknown_in_visible(self):
         """A tool we can't classify stays visible — never silently dropped.
 
@@ -251,6 +259,27 @@ class TestAssembly:
         )
         assert not result.activated
         assert {t["function"]["name"] for t in result.tool_defs} == {"terminal", "read_file"}
+
+    def test_opt_in_core_tools_move_behind_bridge(self):
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES
+
+        defs = [
+            _td("terminal", "Run shell commands"),
+            _td("image_generate", "Generate an image"),
+            _td("text_to_speech", "Convert text to speech"),
+        ]
+        result = assemble_tool_defs(
+            defs,
+            context_length=1_000_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        names = {td["function"]["name"] for td in result.tool_defs}
+
+        assert result.activated
+        assert "terminal" in names
+        assert "image_generate" not in names
+        assert "text_to_speech" not in names
+        assert BRIDGE_TOOL_NAMES <= names
 
     @staticmethod
     def _register_mcp(name):
